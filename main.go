@@ -221,19 +221,51 @@ func main() {
 		log.Fatalf("Error initializing logger: %v", err)
 	}
 
-	// If running as a Windows service, defer to the platform-specific handler
-	isService := false
-	if isWindowsService() {
-		isService = true
+	// Check if there are additional command-line arguments
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "install":
+			if len(os.Args) < 5 { // Ensure arguments for service setup are provided
+				fmt.Println("Usage: install <service_name> <display_name> <description>")
+				os.Exit(1)
+			}
+			serviceName := os.Args[2]
+			displayName := os.Args[3]
+			description := os.Args[4]
+			installService(serviceName, displayName, description)
+			return
+
+		case "remove":
+			if len(os.Args) < 3 { // Ensure the service name is provided
+				fmt.Println("Usage: remove <service_name>")
+				os.Exit(1)
+			}
+			serviceName := os.Args[2]
+			removeService(serviceName)
+			return
+
+		case "help":
+			fmt.Println("Usage:")
+			fmt.Println("  install <service_name> <display_name> <description> - Install the service.")
+			fmt.Println("  remove <service_name> - Remove the service.")
+			fmt.Println("  <no arguments> - Run the application in service or standalone mode.")
+			os.Exit(0)
+
+		default:
+			fmt.Printf("Unknown command: %s\n", os.Args[1])
+			fmt.Println("Use 'help' for a list of available commands.")
+			os.Exit(1)
+		}
 	}
 
-	if isService {
-		// Windows-specific service runner
+	// Determine if running as a Windows service
+	if isWindowsService() {
+		// Run as a Windows service
 		if err := runWindowsService(); err != nil {
 			log.Fatalf("Failed to run service: %v", err)
 		}
 	} else {
-		// Standalone execution for both Linux and Windows (non-service mode)
+		// Run as a standalone application
 		log.Println("Starting as a standalone application...")
 		if err := runApp(); err != nil {
 			log.Fatalf("Application failed: %v", err)

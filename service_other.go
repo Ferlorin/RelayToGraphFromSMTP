@@ -12,6 +12,14 @@ func isWindowsService() bool {
 	return false
 }
 
+func installService(serviceName, displayName, description string) {
+	panic("installService is not supported on this platform. This feature is available only on Windows.")
+}
+
+func removeService(serviceName string) {
+	panic("removeService is not supported on this platform. This feature is available only on Windows.")
+}
+
 func runApp() error {
 	be := &Backend{}
 	server := smtp.NewServer(be)
