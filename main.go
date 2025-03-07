@@ -22,6 +22,7 @@ type Config struct {
 	Scope        string
 	Host         string
 	Port         string
+	ServiceName  string
 }
 
 var config Config
@@ -32,12 +33,20 @@ func loadConfig() error {
 	if err != nil {
 		return err
 	}
+
+	// Load Microsoft Graph settings
 	config.TenantID = cfg.Section("MicrosoftGraph").Key("TenantID").String()
 	config.ClientID = cfg.Section("MicrosoftGraph").Key("ClientID").String()
 	config.ClientSecret = cfg.Section("MicrosoftGraph").Key("ClientSecret").String()
 	config.Scope = cfg.Section("MicrosoftGraph").Key("Scope").String()
+
+	// Load Server settings
 	config.Host = cfg.Section("Server").Key("Host").String()
 	config.Port = cfg.Section("Server").Key("SMTPPort").String()
+
+	// Load Service settings
+	config.ServiceName = cfg.Section("Service").Key("ServiceName").String()
+
 	return nil
 }
 
@@ -54,7 +63,7 @@ func initLogger() error {
 // --- SMTP Backend ---
 type Backend struct{}
 
-func (bkd *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
+func (bkd *Backend) NewSession(_ *smtp.Conn) (smtp.Session, error) {
 	return &Session{}, nil
 }
 
@@ -101,7 +110,7 @@ func (e *EmailTransaction) resetAll() {
 // --- SMTP Session ---
 type Session struct{}
 
-func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
+func (s *Session) Mail(from string, _ *smtp.MailOptions) error {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -111,7 +120,7 @@ func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 	return nil
 }
 
-func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
+func (s *Session) Rcpt(to string, _ *smtp.RcptOptions) error {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -213,12 +222,12 @@ func processEmail() {
 func main() {
 	// Load the configuration
 	if err := loadConfig(); err != nil {
-		log.Fatalf("Error loading config: %v", err)
+		logger.Fatalf("Error loading config: %v", err)
 	}
 
 	// Initialize the logger
 	if err := initLogger(); err != nil {
-		log.Fatalf("Error initializing logger: %v", err)
+		logger.Fatalf("Error initializing logger: %v", err)
 	}
 
 	// Check if there are additional command-line arguments
@@ -261,14 +270,19 @@ func main() {
 	// Determine if running as a Windows service
 	if isWindowsService() {
 		// Run as a Windows service
+		logger.Printf("Starting as a Windows Service with name: %s", config.ServiceName)
 		if err := runWindowsService(); err != nil {
-			log.Fatalf("Failed to run service: %v", err)
+			logger.Fatalf("Failed to run as Windows Service: %v", err)
 		}
+
 	} else {
 		// Run as a standalone application
-		log.Println("Starting as a standalone application...")
+		logger.Println("Running as standalone application...")
 		if err := runApp(); err != nil {
-			log.Fatalf("Application failed: %v", err)
+			logger.Fatalf("Application error: %v", err)
 		}
+
 	}
+	logger.Println("Application finished.")
+
 }
