@@ -1,0 +1,103 @@
+name: Build, Sign, and Release Golang App
+
+on:
+  push:
+    tags:
+      - "v*"  # Trigger on version tag pushes
+
+permissions:
+  id-token: write  # Allows GitHub OIDC identity
+  contents: write  # Enables uploading assets
+  pages: write  # Allows release notes and assets uploading
+  actions: write  # Required for creating a release
+
+jobs:
+  build-and-sign:
+    runs-on: ubuntu-latest  # You can keep it as Ubuntu for multi-platform builds
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Set up Cosign for Signing
+        run: |
+          curl -LO https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64
+          chmod +x cosign-linux-amd64
+          sudo mv cosign-linux-amd64 /usr/local/bin/cosign
+
+      - name: Build for Linux
+        run: |
+          echo "Building for Linux"
+          GOOS=linux GOARCH=amd64 go build -o smtpservice
+
+      - name: Build for Windows x64
+        run: |
+          echo "Building for Windows x64"
+          GOOS=windows GOARCH=amd64 go build -o smtpservice_x64.exe
+
+      - name: Build for Windows x86
+        run: |
+          echo "Building for Windows x86"
+          GOOS=windows GOARCH=386 go build -o smtpservice_x86.exe
+
+      - name: Sign Linux Binary with Cosign
+        run: cosign sign-blob --oidc-provider=github smtpservice --output-signature smtpservice.sig
+
+      - name: Sign Windows x64 Binary with Cosign
+        run: cosign sign-blob --oidc-provider=github smtpservice_x64.exe --output-signature smtpservice_x64.exe.sig
+
+      - name: Sign Windows x86 Binary with Cosign
+        run: cosign sign-blob --oidc-provider=github smtpservice_x86.exe --output-signature smtpservice_x86.exe.sig
+
+      - name: Upload Signed Linux Binary
+        uses: actions/upload-artifact@v3
+        with:
+          name: signed-linux-binary
+          path: smtpservice
+
+      - name: Upload Signed Windows x64 Binary
+        uses: actions/upload-artifact@v3
+        with:
+          name: signed-windows-x64-binary
+          path: smtpservice_x64.exe
+
+      - name: Upload Signed Windows x86 Binary
+        uses: actions/upload-artifact@v3
+        with:
+          name: signed-windows-x86-binary
+          path: smtpservice_x86.exe
+
+      - name: Upload Signatures
+        uses: actions/upload-artifact@v3
+        with:
+          name: signed-signatures
+          path: "*.sig"
+
+  create-release:
+    runs-on: ubuntu-latest
+    needs: build-and-sign  # Wait for the build-and-sign job to complete
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            smtpservice
+            smtpservice_x64.exe
+            smtpservice_x86.exe
+            smtpservice.sig
+            smtpservice_x64.exe.sig
+            smtpservice_x86.exe.sig
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub token to authenticate the release
+
+      - name: Output Release URL
+        run: 'echo "Release URL: ${{ steps.create_release.outputs.upload_url }}"'
