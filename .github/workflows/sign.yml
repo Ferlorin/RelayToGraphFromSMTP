@@ -46,13 +46,13 @@ jobs:
           GOOS=windows GOARCH=386 go build -o smtpservice_x86.exe
 
       - name: Sign Linux Binary with Cosign
-        run: cosign sign-blob --oidc-provider=github smtpservice --output-signature smtpservice.sig
+        run: cosign sign-blob --oidc-provider=github --no-confirm smtpservice --output-signature smtpservice.sig
 
       - name: Sign Windows x64 Binary with Cosign
-        run: cosign sign-blob --oidc-provider=github smtpservice_x64.exe --output-signature smtpservice_x64.exe.sig
+        run: cosign sign-blob --oidc-provider=github --no-confirm smtpservice_x64.exe --output-signature smtpservice_x64.exe.sig
 
       - name: Sign Windows x86 Binary with Cosign
-        run: cosign sign-blob --oidc-provider=github smtpservice_x86.exe --output-signature smtpservice_x86.exe.sig
+        run: cosign sign-blob --oidc-provider=github --no-confirm smtpservice_x86.exe --output-signature smtpservice_x86.exe.sig
 
       - name: Upload Signed Linux Binary
         uses: actions/upload-artifact@v4
