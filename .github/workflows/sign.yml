@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build-and-sign:
-    runs-on: ubuntu-latest  # You can keep it as Ubuntu for multi-platform builds
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Code
@@ -22,13 +22,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.21'
+          go-version: '1.24.1'
 
-      - name: Set up Cosign for Signing
-        run: |
-          curl -LO https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64
-          chmod +x cosign-linux-amd64
-          sudo mv cosign-linux-amd64 /usr/local/bin/cosign
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3.8.1
+      - name: Check Cosign install!
+        run: cosign version
 
       - name: Build for Linux
         run: |
@@ -46,13 +45,13 @@ jobs:
           GOOS=windows GOARCH=386 go build -o smtpservice_x86.exe
 
       - name: Sign Linux Binary with Cosign
-        run: cosign sign-blob --oidc-provider=github --no-confirm smtpservice --output-signature smtpservice.sig
+        run: cosign sign-blob --yes --oidc-provider=github smtpservice --output-signature smtpservice.sig
 
       - name: Sign Windows x64 Binary with Cosign
-        run: cosign sign-blob --oidc-provider=github --no-confirm smtpservice_x64.exe --output-signature smtpservice_x64.exe.sig
+        run: cosign sign-blob --yes --oidc-provider=github smtpservice_x64.exe --output-signature smtpservice_x64.exe.sig
 
       - name: Sign Windows x86 Binary with Cosign
-        run: cosign sign-blob --oidc-provider=github --no-confirm smtpservice_x86.exe --output-signature smtpservice_x86.exe.sig
+        run: cosign sign-blob --yes --oidc-provider=github smtpservice_x86.exe --output-signature smtpservice_x86.exe.sig
 
       - name: Upload Signed Linux Binary
         uses: actions/upload-artifact@v4
