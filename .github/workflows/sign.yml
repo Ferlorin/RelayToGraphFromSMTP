@@ -26,7 +26,8 @@ jobs:
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3.8.1
-      - name: Check Cosign install!
+
+      - name: Check Cosign install
         run: cosign version
 
       - name: Build for Linux
@@ -53,74 +54,78 @@ jobs:
       - name: Sign Windows x86 Binary with Cosign
         run: cosign sign-blob --yes --oidc-provider=github smtpservice_x86.exe --output-signature smtpservice_x86.exe.sig
 
-      - name: Upload Signed Linux Binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: signed-linux-binary
-          path: smtpservice
+      # Combine Linux binary, signature, and config.ini into a zip
+      - name: Create Linux Package
+        run: |
+          mkdir linux_package
+          cp smtpservice smtpservice.sig config.ini linux_package/
+          zip -r smtpservice-linux.zip linux_package
 
-      - name: Upload Signed Windows x64 Binary
+      - name: Upload Linux Zip as Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: signed-windows-x64-binary
-          path: smtpservice_x64.exe
+          name: smtpservice-linux-zip
+          path: smtpservice-linux.zip
 
-      - name: Upload Signed Windows x86 Binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: signed-windows-x86-binary
-          path: smtpservice_x86.exe
+      # Combine Windows x64 binary, signature, and config.ini into a zip
+      - name: Create Windows x64 Package
+        run: |
+          mkdir win_x64_package
+          cp smtpservice_x64.exe smtpservice_x64.exe.sig config.ini win_x64_package/
+          zip -r smtpservice-windows-x64.zip win_x64_package
 
-      - name: Upload Signatures
+      - name: Upload Windows x64 Zip as Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: signed-signatures
-          path: "*.sig"
+          name: smtpservice-windows-x64-zip
+          path: smtpservice-windows-x64.zip
+
+      # Combine Windows x86 binary, signature, and config.ini into a zip
+      - name: Create Windows x86 Package
+        run: |
+          mkdir win_x86_package
+          cp smtpservice_x86.exe smtpservice_x86.exe.sig config.ini win_x86_package/
+          zip -r smtpservice-windows-x86.zip win_x86_package
+
+      - name: Upload Windows x86 Zip as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: smtpservice-windows-x86-zip
+          path: smtpservice-windows-x86.zip
 
   create-release:
     runs-on: ubuntu-latest
     needs: build-and-sign  # Wait for the build-and-sign job to complete
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Download all required artifacts
-      - name: Download Signed Linux Binary
+      # Download zipped artifacts directly
+      - name: Download Linux Zip
         uses: actions/download-artifact@v4
         with:
-          name: signed-linux-binary
+          name: smtpservice-linux-zip
 
-      - name: Download Signed Windows x64 Binary
+      - name: Download Windows x64 Zip
         uses: actions/download-artifact@v4
         with:
-          name: signed-windows-x64-binary
+          name: smtpservice-windows-x64-zip
 
-      - name: Download Signed Windows x86 Binary
+      - name: Download Windows x86 Zip
         uses: actions/download-artifact@v4
         with:
-          name: signed-windows-x86-binary
+          name: smtpservice-windows-x86-zip
 
-      - name: Download Signatures
-        uses: actions/download-artifact@v4
-        with:
-          name: signed-signatures
-
-      # Verify files after download
-      - name: List Downloaded Files
-        run: ls -R
-
-      # Create GitHub release with the downloaded files
+      # Create the GitHub release with all zipped files attached
       - name: Create GitHub Release
         id: create_release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            smtpservice
-            smtpservice_x64.exe
-            smtpservice_x86.exe
-            smtpservice.sig
-            smtpservice_x64.exe.sig
-            smtpservice_x86.exe.sig
+            smtpservice-linux.zip
+            smtpservice-windows-x64.zip
+            smtpservice-windows-x86.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
