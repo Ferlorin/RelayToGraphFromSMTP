@@ -32,17 +32,17 @@ jobs:
       - name: Build for Linux
         run: |
           echo "Building for Linux"
-          GOOS=linux GOARCH=amd64 go build -o smtpservice
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o smtpservice
 
       - name: Build for Windows x64
         run: |
           echo "Building for Windows x64"
-          GOOS=windows GOARCH=amd64 go build -o smtpservice_x64.exe
+          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o smtpservice_x64.exe
 
       - name: Build for Windows x86
         run: |
           echo "Building for Windows x86"
-          GOOS=windows GOARCH=386 go build -o smtpservice_x86.exe
+          GOOS=windows GOARCH=386 go build -ldflags="-s -w" -o smtpservice_x86.exe
 
       - name: Sign Linux Binary with Cosign
         run: cosign sign-blob --yes --oidc-provider=github smtpservice --output-signature smtpservice.sig
