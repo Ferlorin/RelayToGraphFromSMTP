@@ -84,6 +84,39 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Download Signed Linux Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-linux-binary
+
+      - name: Download Signed Windows x64 Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-windows-x64-binary
+
+      - name: Download Signed Windows x86 Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-windows-x86-binary
+
+      - name: Download Signatures
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-signatures
+
+      # Unzip all downloaded binaries
+      - name: Unzip Linux Binary
+        run: unzip signed-linux-binary.zip
+
+      - name: Unzip Windows x64 Binary
+        run: unzip signed-windows-x64-binary.zip
+
+      - name: Unzip Windows x86 Binary
+        run: unzip signed-windows-x86-binary.zip
+
+      - name: Unzip Signatures
+        run: unzip signed-signatures.zip
+
       - name: Create GitHub Release
         id: create_release
         uses: softprops/action-gh-release@v1
