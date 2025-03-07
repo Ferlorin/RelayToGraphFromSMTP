@@ -28,10 +28,17 @@ type Config struct {
 	Host         string
 	Port         string
 	ServiceName  string
+	Debug        bool
 }
 
 var config Config
 var logger *log.Logger
+
+func debugLog(format string, v ...interface{}) {
+	if config.Debug {
+		logger.Printf("[DEBUG] "+format, v...) // Only log if debug is enabled
+	}
+}
 
 func initWorkingDir() {
 	ex, err := os.Executable()
@@ -66,6 +73,8 @@ func loadConfig() error {
 
 	// Load Service settings
 	config.ServiceName = cfg.Section("Service").Key("ServiceName").String()
+	// Parse Debug as a boolean (default is false if the value is missing)
+	config.Debug = cfg.Section("Service").Key("Debug").MustBool(false)
 
 	return nil
 }
@@ -178,7 +187,7 @@ func (s *Session) Data(r io.Reader) error {
 	}
 
 	transaction.appendData(tempBuffer.Bytes())
-	logger.Printf("DATA segment appended, size=%d bytes", tempBuffer.Len())
+	debugLog("DATA segment appended, size=%d bytes", tempBuffer.Len())
 	return nil
 }
 
@@ -186,7 +195,7 @@ func (s *Session) Reset() {
 	mu.Lock()
 	defer mu.Unlock()
 
-	logger.Println("RESET command received. Preserving recipient and sender state.")
+	debugLog("RESET command received. Preserving recipient and sender state.")
 }
 
 func (s *Session) Logout() error {
@@ -200,7 +209,7 @@ func (s *Session) Logout() error {
 		totalBufferLength += buffer.Len()
 	}
 
-	logger.Printf("Transaction summary before QUIT: from=%s, to=%v, totalBuffers=%d, totalLength=%d",
+	debugLog("Transaction summary before QUIT: from=%s, to=%v, totalBuffers=%d, totalLength=%d",
 		transaction.from, transaction.to, len(transaction.dataBuffers), totalBufferLength)
 
 	if transaction.from == "" || len(transaction.to) == 0 || totalBufferLength == 0 {
@@ -332,7 +341,7 @@ func processEmail() {
 
 	// Debug recipients and attachments
 	logger.Printf("Final Recipients: To: %v, Cc: %v, Bcc: %v", toList, ccList, bccList)
-	logger.Printf("Attachments field (array): %v", attachments)
+	debugLog("Attachments field (array): %v", attachments)
 
 	// Ensure attachments is **always** an array (important fix)
 	if attachments == nil {
@@ -416,7 +425,7 @@ func sendMail(sender string, payload map[string]interface{}) error {
 
 	if resp.StatusCode != 202 {
 		responseBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("Graph API error: %s", string(responseBody))
+		return fmt.Errorf("graph API error: %s", string(responseBody))
 	}
 	return nil
 }
@@ -478,17 +487,7 @@ func main() {
 	if !isWindowsService {
 		newWriter := io.MultiWriter(logger.Writer(), os.Stdout)
 		logger.SetOutput(newWriter)
-	}
 
-	// Determine if running as a Windows service
-	if isWindowsService {
-		// Run as a Windows service
-		logger.Printf("Starting as a Windows Service with name: %s", config.ServiceName)
-		if err := runWindowsService(); err != nil {
-			logger.Fatalf("Failed to run as Windows Service: %v", err)
-		}
-
-	} else {
 		// Check if there are additional command-line arguments
 		if len(os.Args) > 1 {
 			switch os.Args[1] {
@@ -516,16 +515,33 @@ func main() {
 				fmt.Println("Usage:")
 				fmt.Println("  install <service_name> <display_name> <description> - Install the service.")
 				fmt.Println("  remove <service_name> - Remove the service.")
+				fmt.Println("  -debug - Enable debug mode (overrides config).")
 				fmt.Println("  <no arguments> - Run the application in service or standalone mode.")
 				os.Exit(0)
 
+			case "-debug":
+				// Enable debug mode by overriding the config variable
+				config.Debug = true
+				logger.Println("Debug mode enabled")
+				// Continue to the application startup
+
 			default:
-				fmt.Printf("Unknown command: %s\n", os.Args[1])
-				fmt.Println("Use 'help' for a list of available commands.")
+				logger.Printf("Unknown command: %s\n", os.Args[1])
+				logger.Println("Use 'help' for a list of available commands.")
 				os.Exit(1)
 			}
 		}
+	}
 
+	// Determine if running as a Windows service
+	if isWindowsService {
+		// Run as a Windows service
+		logger.Printf("Starting as a Windows Service with name: %s", config.ServiceName)
+		if err := runWindowsService(); err != nil {
+			logger.Fatalf("Failed to run as Windows Service: %v", err)
+		}
+
+	} else {
 		// Run as a standalone application
 		logger.Println("Running as standalone application...")
 		if err := runApp(); err != nil {
