@@ -55,25 +55,25 @@ jobs:
         run: cosign sign-blob --oidc-provider=github smtpservice_x86.exe --output-signature smtpservice_x86.exe.sig
 
       - name: Upload Signed Linux Binary
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: signed-linux-binary
           path: smtpservice
 
       - name: Upload Signed Windows x64 Binary
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: signed-windows-x64-binary
           path: smtpservice_x64.exe
 
       - name: Upload Signed Windows x86 Binary
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: signed-windows-x86-binary
           path: smtpservice_x86.exe
 
       - name: Upload Signatures
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: signed-signatures
           path: "*.sig"
