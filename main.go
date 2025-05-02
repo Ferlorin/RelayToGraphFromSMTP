@@ -9,17 +9,12 @@ import (
 	"github.com/emersion/go-message/mail"
 	"github.com/emersion/go-smtp"
 	"golang.org/x/text/encoding/charmap"
-	"golang.org/x/text/encoding/japanese"
-	"golang.org/x/text/encoding/korean"
-	"golang.org/x/text/encoding/simplifiedchinese"
-	"golang.org/x/text/encoding/traditionalchinese"
 	"gopkg.in/ini.v1"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -314,68 +309,20 @@ func processEmail() {
 		switch h := part.Header.(type) {
 		case *mail.InlineHeader:
 			contentType, params, _ := h.ContentType()
-			tempCharset := params["charset"]
-			if tempCharset == "" {
-				tempCharset = "utf-8"
-			}
-			tempCharset = strings.ToLower(tempCharset)
-
 			bodyBytes, _ := io.ReadAll(part.Body)
-			bodyString := ""
+			charsetName := params["charset"]
+			charsetName = strings.ToLower(charsetName)
 
-			// Try using go-message's built-in charset reader first
-			if reader, err := charset.Reader(tempCharset, strings.NewReader(string(bodyBytes))); err == nil {
-				decoded, err := io.ReadAll(reader)
-				if err == nil {
-					bodyString = string(decoded)
-				}
-			}
-
-			// If built-in reader failed, try specific encodings
-			if bodyString == "" {
-				switch tempCharset {
-				case "windows-1251":
-					decoded, _ := charmap.Windows1251.NewDecoder().Bytes(bodyBytes)
-					bodyString = string(decoded)
-				case "koi8-r":
-					decoded, _ := charmap.KOI8R.NewDecoder().Bytes(bodyBytes)
-					bodyString = string(decoded)
-				case "iso-8859-1", "latin1":
-					decoded, _ := charmap.ISO8859_1.NewDecoder().Bytes(bodyBytes)
-					bodyString = string(decoded)
-				case "gbk", "gb2312":
-					decoded, _ := simplifiedchinese.GBK.NewDecoder().Bytes(bodyBytes)
-					bodyString = string(decoded)
-				case "big5":
-					decoded, _ := traditionalchinese.Big5.NewDecoder().Bytes(bodyBytes)
-					bodyString = string(decoded)
-				case "euc-jp":
-					decoded, _ := japanese.EUCJP.NewDecoder().Bytes(bodyBytes)
-					bodyString = string(decoded)
-				case "shift-jis":
-					decoded, _ := japanese.ShiftJIS.NewDecoder().Bytes(bodyBytes)
-					bodyString = string(decoded)
-				case "euc-kr":
-					decoded, _ := korean.EUCKR.NewDecoder().Bytes(bodyBytes)
-					bodyString = string(decoded)
-				default:
-					bodyString = string(bodyBytes)
-				}
-			}
-
-			// Update charset in HTML content if needed
-			if contentType == "text/html" {
-				bodyString = updateHTMLCharset(bodyString)
-			}
+			logger.Printf("CharsetName: %s", charsetName)
 
 			switch contentType {
 			case "text/plain":
-				if textBody == "" {
-					textBody = bodyString
+				if textBody == "" { // Use first plain-text part
+					textBody = string(bodyBytes)
 				}
 			case "text/html":
-				if htmlBody == "" {
-					htmlBody = bodyString
+				if htmlBody == "" { // Use first HTML part, if present
+					htmlBody = string(bodyBytes)
 				}
 			}
 
@@ -390,7 +337,7 @@ func processEmail() {
 				"@odata.type":  "#microsoft.graph.fileAttachment",
 				"name":         filename,
 				"contentType":  contentType,
-				"contentBytes": base64.StdEncoding.EncodeToString(attachmentBytes),
+				"contentBytes": string(base64.StdEncoding.EncodeToString(attachmentBytes)),
 			})
 		}
 	}
@@ -425,39 +372,7 @@ func processEmail() {
 	logger.Println("Email processed and sent successfully.")
 }
 
-func updateHTMLCharset(html string) string {
-	// Update charset in meta tags
-	patterns := []string{
-		`charset=["']?[^"'\s>]+["']?`,
-		`charset=([^\s>]+)`,
-	}
-
-	for _, pattern := range patterns {
-		re := regexp.MustCompile(pattern)
-		html = re.ReplaceAllString(html, `charset="utf-8"`)
-	}
-
-	// Add charset meta if not present
-	if !strings.Contains(strings.ToLower(html), "charset") {
-		metaTag := `<meta charset="utf-8">`
-		if strings.Contains(html, "<head>") {
-			html = strings.Replace(html, "<head>", "<head>"+metaTag, 1)
-		} else if strings.Contains(html, "<html>") {
-			html = strings.Replace(html, "<html>", "<html><head>"+metaTag+"</head>", 1)
-		} else {
-			html = metaTag + html
-		}
-	}
-
-	return html
-}
-
 func buildGraphMessage(subject string, bodyContentType string, messageBody string, toList []string, ccList []string, bccList []string, attachments []map[string]interface{}) map[string]interface{} {
-	// Always use "HTML" (uppercase) for HTML content
-	if strings.EqualFold(bodyContentType, "html") {
-		bodyContentType = "HTML"
-	}
-
 	graphMessage := map[string]interface{}{
 		"message": map[string]interface{}{
 			"subject": subject,
@@ -519,18 +434,6 @@ func sendMail(sender string, payload map[string]interface{}) error {
 
 func doSendMail(sender string, payload map[string]interface{}) error {
 	url := fmt.Sprintf("https://graph.microsoft.com/v1.0/users/%s/sendMail", sender)
-
-	// Add proper content type headers to ensure UTF-8 is used
-	if msg, ok := payload["message"].(map[string]interface{}); ok {
-		if body, ok := msg["body"].(map[string]interface{}); ok {
-			if contentType, ok := body["contentType"].(string); ok &&
-				strings.EqualFold(contentType, "HTML") {
-				// Ensure content is properly marked as UTF-8 HTML
-				body["contentType"] = "HTML"
-			}
-		}
-	}
-
 	body, _ := json.Marshal(payload)
 
 	token, err := getAccessToken()
@@ -545,9 +448,8 @@ func doSendMail(sender string, payload map[string]interface{}) error {
 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Prefer", "outlook.allow-unsafe-html") // Add this line
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
