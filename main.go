@@ -401,8 +401,34 @@ func buildRecipients(list []string) []map[string]interface{} {
 	return recipients
 }
 
-// Send the email via Microsoft Graph API.
 func sendMail(sender string, payload map[string]interface{}) error {
+	maxRetries := 3
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 1s, 2s, 4s
+			backoff := time.Second * time.Duration(1<<attempt)
+			logger.Printf("Retry attempt %d after %v delay", attempt+1, backoff)
+			time.Sleep(backoff)
+		}
+
+		if err := doSendMail(sender, payload); err != nil {
+			lastErr = err
+			if !strings.Contains(err.Error(), "MailboxInfoStale") {
+				// If it's not a MailboxInfoStale error, return immediately
+				return err
+			}
+			continue
+		}
+
+		return nil // Success
+	}
+
+	return fmt.Errorf("failed after %d retries. Last error: %v", maxRetries, lastErr)
+}
+
+func doSendMail(sender string, payload map[string]interface{}) error {
 	url := fmt.Sprintf("https://graph.microsoft.com/v1.0/users/%s/sendMail", sender)
 	body, _ := json.Marshal(payload)
 
@@ -434,6 +460,7 @@ func sendMail(sender string, payload map[string]interface{}) error {
 		responseBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("graph API error: %s", string(responseBody))
 	}
+
 	return nil
 }
 
