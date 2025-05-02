@@ -313,7 +313,7 @@ func processEmail() {
 			charsetName := params["charset"]
 			charsetName = strings.ToLower(charsetName)
 
-			logger.Printf("CharsetName: %s", charsetName)
+			logger.Printf("CharsetName: %s and ContentType: %s", charsetName, contentType)
 
 			switch contentType {
 			case "text/plain":
