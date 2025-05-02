@@ -5,8 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/emersion/go-message/charset"
 	"github.com/emersion/go-message/mail"
 	"github.com/emersion/go-smtp"
+	"golang.org/x/text/encoding/charmap"
 	"gopkg.in/ini.v1"
 	"io"
 	"log"
@@ -33,6 +35,11 @@ type Config struct {
 
 var config Config
 var logger *log.Logger
+
+func init() {
+	// Register Windows-1251 charset
+	charset.RegisterEncoding("windows-1251", charmap.Windows1251)
+}
 
 func debugLog(format string, v ...interface{}) {
 	if config.Debug {
