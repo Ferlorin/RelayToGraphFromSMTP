@@ -327,19 +327,17 @@ func processEmail() {
 			case "image/png", "image/jpeg", "image/jpg", "image/bmp", "image/gif": // Handle inline images
 				contentID := h.Get("Content-ID")
 				contentID = strings.Trim(contentID, "<>")
-				filename := params["name"]
-				if filename == "" {
-					filename = contentID // Use Content-ID as filename if name not provided
+
+				// Convert the image to base64
+				base64Image := base64.StdEncoding.EncodeToString(bodyBytes)
+
+				// Replace the cid: reference in HTML with the base64 data
+				if htmlBody != "" {
+					oldRef := fmt.Sprintf("cid:%s", contentID)
+					newRef := fmt.Sprintf("data:%s;base64,%s", contentType, base64Image)
+					htmlBody = strings.ReplaceAll(htmlBody, oldRef, newRef)
 				}
 
-				attachments = append(attachments, map[string]interface{}{
-					"@odata.type":  "#microsoft.graph.fileAttachment",
-					"name":         filename,
-					"contentType":  contentType,
-					"contentBytes": string(base64.StdEncoding.EncodeToString(bodyBytes)),
-					"contentId":    contentID,
-					"isInline":     true,
-				})
 			}
 
 		case *mail.AttachmentHeader:
