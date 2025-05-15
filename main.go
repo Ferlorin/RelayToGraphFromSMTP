@@ -351,7 +351,7 @@ func processEmail() {
 				"@odata.type":  "#microsoft.graph.fileAttachment",
 				"name":         filename,
 				"contentType":  contentType,
-				"contentBytes": string(base64.StdEncoding.EncodeToString(attachmentBytes)),
+				"contentBytes": base64.StdEncoding.EncodeToString(attachmentBytes),
 			})
 		}
 	}
