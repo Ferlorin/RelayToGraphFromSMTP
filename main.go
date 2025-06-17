@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/emersion/go-message"
 	"github.com/emersion/go-message/charset"
 	"github.com/emersion/go-message/mail"
 	"github.com/emersion/go-smtp"
@@ -44,6 +45,38 @@ func init() {
 func debugLog(format string, v ...interface{}) {
 	if config.Debug {
 		logger.Printf("[DEBUG] "+format, v...) // Only log if debug is enabled
+	}
+}
+
+type TransactionManager struct {
+	mu           sync.Mutex
+	transactions map[string]*EmailTransaction
+	timeouts     map[string]time.Time
+}
+
+var globalManager = NewTransactionManager()
+
+func NewTransactionManager() *TransactionManager {
+	tm := &TransactionManager{
+		transactions: make(map[string]*EmailTransaction),
+		timeouts:     make(map[string]time.Time),
+	}
+	go tm.cleanup()
+	return tm
+}
+
+func (tm *TransactionManager) cleanup() {
+	ticker := time.NewTicker(30 * time.Second)
+	for range ticker.C {
+		tm.mu.Lock()
+		now := time.Now()
+		for key, timeout := range tm.timeouts {
+			if now.Sub(timeout) > 5*time.Minute {
+				delete(tm.transactions, key)
+				delete(tm.timeouts, key)
+			}
+		}
+		tm.mu.Unlock()
 	}
 }
 
@@ -115,12 +148,6 @@ func (bkd *Backend) NewSession(_ *smtp.Conn) (smtp.Session, error) {
 	return &Session{}, nil
 }
 
-// Global email transaction state
-var (
-	mu          sync.Mutex
-	transaction = EmailTransaction{}
-)
-
 // EmailTransaction represents an ongoing email transaction.
 type EmailTransaction struct {
 	from        string   // Sender email
@@ -156,96 +183,125 @@ func (e *EmailTransaction) resetAll() {
 }
 
 // --- SMTP Session ---
-type Session struct{}
+type Session struct {
+	currentKey string
+	mu         sync.Mutex
+}
 
 func (s *Session) Mail(from string, _ *smtp.MailOptions) error {
-	mu.Lock()
-	defer mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	transaction.from = from
 	logger.Printf("MAIL FROM: %s", from)
-	transaction.resetDataBuffers()
 	return nil
 }
 
 func (s *Session) Rcpt(to string, _ *smtp.RcptOptions) error {
-	mu.Lock()
-	defer mu.Unlock()
-
-	transaction.addRecipient(to)
 	logger.Printf("Recipient added: %s", to)
 	return nil
 }
 
 func (s *Session) Data(r io.Reader) error {
-	mu.Lock()
-	defer mu.Unlock()
-
-	if transaction.from == "" || len(transaction.to) == 0 {
-		logger.Printf("DATA command received without MAIL FROM or RCPT TO. Ignoring.")
-		return fmt.Errorf("DATA requires MAIL FROM and RCPT TO")
-	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	var tempBuffer bytes.Buffer
-	_, err := io.Copy(&tempBuffer, r)
-	if err != nil {
+	if _, err := io.Copy(&tempBuffer, r); err != nil {
 		logger.Printf("Failed to read DATA content: %v", err)
 		return err
 	}
 
-	transaction.appendData(tempBuffer.Bytes())
-	debugLog("DATA segment appended, size=%d bytes", tempBuffer.Len())
-	return nil
+	msg, err := message.Read(strings.NewReader(tempBuffer.String()))
+	if err != nil {
+		logger.Printf("Failed to parse email: %v", err)
+		return err
+	}
+
+	subject := msg.Header.Get("Subject")
+	if subject == "" {
+		subject = "No Subject"
+	}
+
+	from := msg.Header.Get("From")
+	s.currentKey = fmt.Sprintf("%s:%s", from, subject)
+
+	globalManager.mu.Lock()
+	trans, exists := globalManager.transactions[s.currentKey]
+	if !exists {
+		trans = &EmailTransaction{}
+		globalManager.transactions[s.currentKey] = trans
+	}
+	globalManager.timeouts[s.currentKey] = time.Now()
+	globalManager.mu.Unlock()
+
+	return processEmailContent(msg, tempBuffer.Bytes(), trans)
 }
 
 func (s *Session) Reset() {
-	mu.Lock()
-	defer mu.Unlock()
-
-	debugLog("RESET command received. Preserving recipient and sender state.")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	debugLog("RESET command received")
 }
 
 func (s *Session) Logout() error {
-	mu.Lock()
-	defer mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	logger.Println("Session ending. Finalizing transaction...")
-
-	totalBufferLength := 0
-	for _, buffer := range transaction.dataBuffers {
-		totalBufferLength += buffer.Len()
+	if s.currentKey == "" {
+		return nil
 	}
 
-	debugLog("Transaction summary before QUIT: from=%s, to=%v, totalBuffers=%d, totalLength=%d",
-		transaction.from, transaction.to, len(transaction.dataBuffers), totalBufferLength)
+	globalManager.mu.Lock()
+	trans, exists := globalManager.transactions[s.currentKey]
+	if exists {
+		delete(globalManager.transactions, s.currentKey)
+		delete(globalManager.timeouts, s.currentKey)
+	}
+	globalManager.mu.Unlock()
 
-	if transaction.from == "" || len(transaction.to) == 0 || totalBufferLength == 0 {
-		logger.Println("Skipping invalid transaction (missing sender, recipients, or content).")
-	} else {
-		processEmail()
+	if exists && trans != nil {
+		logger.Println("Session ending. Finalizing transaction...")
+		processEmail(trans)
+		return nil
 	}
 
-	transaction.resetAll()
 	logger.Println("Transaction reset. Session successfully ended.")
 	return nil
 }
 
+func processEmailContent(msg *message.Entity, data []byte, trans *EmailTransaction) error {
+	header := mail.Header{Header: msg.Header}
+
+	if from, err := header.AddressList("From"); err == nil && len(from) > 0 {
+		trans.from = from[0].Address
+	}
+
+	if to, err := header.AddressList("To"); err == nil {
+		for _, addr := range to {
+			trans.addRecipient(addr.Address)
+		}
+	}
+
+	trans.appendData(data)
+	return nil
+}
+
 // --- Email Processing ---
-func processEmail() {
-	if transaction.from == "" || len(transaction.to) == 0 || len(transaction.dataBuffers) == 0 {
+func processEmail(trans *EmailTransaction) {
+	if trans.from == "" || len(trans.to) == 0 || len(trans.dataBuffers) == 0 {
 		logger.Println("Empty transaction. Skipping email processing.")
 		return
 	}
 
 	// Concatenate all buffers into the email content
 	var fullBody bytes.Buffer
-	for _, buffer := range transaction.dataBuffers {
+	for _, buffer := range trans.dataBuffers {
 		fullBody.Write(buffer.Bytes())
 	}
 	emailContent := fullBody.String()
 
-	logger.Printf("Processing email from: %s", transaction.from)
-	logger.Printf("Recipients: %v", transaction.to)
+	logger.Printf("Processing email from: %s", trans.from)
+	logger.Printf("Recipients: %v", trans.to)
 
 	// Parse the email using go-message
 	r := strings.NewReader(emailContent)
@@ -288,7 +344,7 @@ func processEmail() {
 	}
 
 	// Recipients not in To or CC are assumed to be BCC
-	for _, rcpt := range transaction.to {
+	for _, rcpt := range trans.to {
 		if !rcptMap[strings.ToLower(rcpt)] {
 			bccList = append(bccList, rcpt)
 		}
@@ -377,7 +433,7 @@ func processEmail() {
 	graphMessage := buildGraphMessage(subject, bodyContentType, messageBody, toList, ccList, bccList, attachments)
 
 	// Send the email
-	err = sendMail(transaction.from, graphMessage)
+	err = sendMail(trans.from, graphMessage)
 	if err != nil {
 		logger.Printf("Failed to send email: %v", err)
 		return
