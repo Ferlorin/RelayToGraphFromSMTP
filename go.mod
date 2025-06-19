@@ -12,5 +12,6 @@ require (
 
 require (
 	github.com/emersion/go-sasl v0.0.0-20200509203442-7bfe0ed36a21 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
 )

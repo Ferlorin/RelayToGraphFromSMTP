@@ -9,6 +9,7 @@ import (
 	"github.com/emersion/go-message/charset"
 	"github.com/emersion/go-message/mail"
 	"github.com/emersion/go-smtp"
+	"github.com/google/uuid"
 	"golang.org/x/text/encoding/charmap"
 	"gopkg.in/ini.v1"
 	"io"
@@ -74,10 +75,34 @@ func (tm *TransactionManager) cleanup() {
 			if now.Sub(timeout) > 5*time.Minute {
 				delete(tm.transactions, key)
 				delete(tm.timeouts, key)
+				logger.Printf("Cleaned up abandoned transaction: %s", key)
 			}
 		}
 		tm.mu.Unlock()
 	}
+}
+
+func (tm *TransactionManager) startCleanupRoutine() {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			tm.mu.Lock()
+			now := time.Now()
+			for key, timeout := range tm.timeouts {
+				if now.Sub(timeout) > 2*time.Minute {
+					if trans, exists := tm.transactions[key]; exists {
+						logger.Printf("Cleaning up abandoned transaction: From=%s, Recipients=%d",
+							trans.from, len(trans.to)+len(trans.cc)+len(trans.bcc))
+					}
+					delete(tm.transactions, key)
+					delete(tm.timeouts, key)
+				}
+			}
+			tm.mu.Unlock()
+		}
+	}()
 }
 
 func initWorkingDir() {
@@ -145,7 +170,9 @@ func initLogger() error {
 type Backend struct{}
 
 func (bkd *Backend) NewSession(_ *smtp.Conn) (smtp.Session, error) {
-	return &Session{}, nil
+	return &Session{
+		sessionID: uuid.New().String(),
+	}, nil
 }
 
 // EmailTransaction represents an ongoing email transaction.
@@ -184,15 +211,26 @@ func (e *EmailTransaction) resetAll() {
 
 // --- SMTP Session ---
 type Session struct {
-	currentKey string
-	mu         sync.Mutex
+	mu          sync.Mutex
+	sessionID   string
+	currentKey  string
+	activeEmail string
 }
 
 func (s *Session) Mail(from string, _ *smtp.MailOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	logger.Printf("MAIL FROM: %s", from)
+	s.activeEmail = from
+	s.currentKey = fmt.Sprintf("%s:%s:%d", s.sessionID, from, time.Now().UnixNano())
+
+	globalManager.mu.Lock()
+	trans := &EmailTransaction{from: from}
+	globalManager.transactions[s.currentKey] = trans
+	globalManager.timeouts[s.currentKey] = time.Now()
+	globalManager.mu.Unlock()
+
+	logger.Printf("[%s] MAIL FROM: %s", s.sessionID, from)
 	return nil
 }
 
@@ -201,27 +239,32 @@ func (s *Session) Rcpt(to string, _ *smtp.RcptOptions) error {
 	defer s.mu.Unlock()
 
 	if s.currentKey == "" {
-		logger.Printf("Warning: Attempting to add recipient without an active transaction key")
-		return nil
+		logger.Printf("[%s] Warning: Attempting to add recipient without an active transaction key", s.sessionID)
+		return fmt.Errorf("no active transaction")
 	}
 
 	globalManager.mu.Lock()
 	trans, exists := globalManager.transactions[s.currentKey]
 	if !exists {
-		trans = &EmailTransaction{}
-		globalManager.transactions[s.currentKey] = trans
+		globalManager.mu.Unlock()
+		logger.Printf("[%s] Error: Transaction not found for key: %s", s.sessionID, s.currentKey)
+		return fmt.Errorf("transaction not found")
 	}
 	trans.addRecipient(to)
 	globalManager.timeouts[s.currentKey] = time.Now()
 	globalManager.mu.Unlock()
 
-	logger.Printf("Recipient added: %s", to)
+	logger.Printf("[%s] Recipient added: %s", s.sessionID, to)
 	return nil
 }
 
 func (s *Session) Data(r io.Reader) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.currentKey == "" {
+		return fmt.Errorf("no active transaction")
+	}
 
 	var tempBuffer bytes.Buffer
 	if _, err := io.Copy(&tempBuffer, r); err != nil {
@@ -240,19 +283,21 @@ func (s *Session) Data(r io.Reader) error {
 		subject = "No Subject"
 	}
 
-	from := msg.Header.Get("From")
-	s.currentKey = fmt.Sprintf("%s:%s", from, subject)
+	// Include session ID in the final key
+	finalKey := fmt.Sprintf("%s:%s:%s", s.sessionID, s.activeEmail, subject)
 
 	globalManager.mu.Lock()
-	trans, exists := globalManager.transactions[s.currentKey]
-	if !exists {
-		trans = &EmailTransaction{}
-		globalManager.transactions[s.currentKey] = trans
+	if trans, exists := globalManager.transactions[s.currentKey]; exists {
+		globalManager.transactions[finalKey] = trans
+		globalManager.timeouts[finalKey] = time.Now()
+		delete(globalManager.transactions, s.currentKey)
+		delete(globalManager.timeouts, s.currentKey)
 	}
-	globalManager.timeouts[s.currentKey] = time.Now()
 	globalManager.mu.Unlock()
 
-	return processEmailContent(msg, tempBuffer.Bytes(), trans)
+	s.currentKey = finalKey
+
+	return processEmailContent(msg, tempBuffer.Bytes(), globalManager.transactions[finalKey])
 }
 
 func (s *Session) Reset() {
