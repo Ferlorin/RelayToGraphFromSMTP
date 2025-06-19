@@ -222,13 +222,9 @@ func (s *Session) Mail(from string, _ *smtp.MailOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// If there's a current transaction, add it to pending
-	if s.currentKey != "" {
-		s.pendingKeys = append(s.pendingKeys, s.currentKey)
-	}
-
 	s.activeEmail = from
-	s.currentKey = fmt.Sprintf("%s:%s:%d", s.sessionID, from, time.Now().UnixNano())
+	// Initially use a temporary key until we get the subject
+	s.currentKey = fmt.Sprintf("%s:%s:pending", s.sessionID, from)
 
 	globalManager.mu.Lock()
 	trans := &EmailTransaction{from: from}
@@ -268,10 +264,7 @@ func (s *Session) Data(r io.Reader) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	logger.Printf("[%s] DATA command received", s.sessionID) // Add this line
-
 	if s.currentKey == "" {
-		logger.Printf("[%s] Error: No active transaction for DATA command", s.sessionID) // Add this line
 		return fmt.Errorf("no active transaction")
 	}
 
@@ -292,21 +285,20 @@ func (s *Session) Data(r io.Reader) error {
 		subject = "No Subject"
 	}
 
-	logger.Printf("[%s] Processing email with subject: %s", s.sessionID, subject) // Add this line
-
-	// Include session ID in the final key
+	// Create the final key with subject
 	finalKey := fmt.Sprintf("%s:%s:%s", s.sessionID, s.activeEmail, subject)
 
 	globalManager.mu.Lock()
 	if trans, exists := globalManager.transactions[s.currentKey]; exists {
+		// Move the transaction to the new key that includes the subject
 		globalManager.transactions[finalKey] = trans
 		globalManager.timeouts[finalKey] = time.Now()
 		delete(globalManager.transactions, s.currentKey)
 		delete(globalManager.timeouts, s.currentKey)
+		s.currentKey = finalKey
+		logger.Printf("[%s] Email transaction updated with subject: %s", s.sessionID, subject)
 	}
 	globalManager.mu.Unlock()
-
-	s.currentKey = finalKey
 
 	return processEmailContent(msg, tempBuffer.Bytes(), globalManager.transactions[finalKey])
 }
@@ -363,26 +355,20 @@ func (s *Session) Logout() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Process current transaction if exists
-	if s.currentKey != "" {
-		s.pendingKeys = append(s.pendingKeys, s.currentKey)
+	if s.currentKey == "" {
+		return nil
 	}
 
-	// Process all pending transactions
-	for _, key := range s.pendingKeys {
-		globalManager.mu.Lock()
-		trans, exists := globalManager.transactions[key]
-		if exists {
-			logger.Println("Processing pending transaction...")
-			processEmail(trans)
-			delete(globalManager.transactions, key)
-			delete(globalManager.timeouts, key)
-		}
-		globalManager.mu.Unlock()
+	globalManager.mu.Lock()
+	trans, exists := globalManager.transactions[s.currentKey]
+	if exists {
+		logger.Println("Session ending. Finalizing transaction...")
+		processEmail(trans)
+		delete(globalManager.transactions, s.currentKey)
+		delete(globalManager.timeouts, s.currentKey)
 	}
+	globalManager.mu.Unlock()
 
-	// Clear all pending transactions
-	s.pendingKeys = nil
 	s.currentKey = ""
 	return nil
 }
