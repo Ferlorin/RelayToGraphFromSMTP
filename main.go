@@ -332,7 +332,7 @@ func (s *Session) Logout() error {
 			logger.Printf("[%s] Failed to process email: %v", s.sessionID, err)
 			return err
 		} else {
-			logger.Printf("[%s] Successfully processed transaction: %s", s.sessionID, key)
+			logger.Printf("[%s] Successfully processed transaction: %s", s.sessionID, s.currentKey)
 		}
 		return nil
 	}
