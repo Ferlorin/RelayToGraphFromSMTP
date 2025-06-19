@@ -222,8 +222,23 @@ func (s *Session) Mail(from string, _ *smtp.MailOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// If there's a current transaction, check if it has data
+	if s.currentKey != "" {
+		globalManager.mu.Lock()
+		if trans, exists := globalManager.transactions[s.currentKey]; exists {
+			if len(trans.dataBuffers) > 0 {
+				// Only save transactions that have received data
+				s.pendingKeys = append(s.pendingKeys, s.currentKey)
+				logger.Printf("[%s] Added transaction to pending: %s", s.sessionID, s.currentKey)
+			}
+		}
+		globalManager.mu.Unlock()
+	}
+
+	// Create new transaction
 	s.activeEmail = from
-	s.currentKey = fmt.Sprintf("%s:%s:%d", s.sessionID, from, time.Now().UnixNano())
+	transactionTime := time.Now().UnixNano()
+	s.currentKey = fmt.Sprintf("%s:%s:%d", s.sessionID, from, transactionTime)
 
 	globalManager.mu.Lock()
 	trans := &EmailTransaction{from: from}
@@ -314,27 +329,44 @@ func (s *Session) Logout() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.currentKey == "" {
-		return nil
-	}
-
-	globalManager.mu.Lock()
-	trans, exists := globalManager.transactions[s.currentKey]
-	if exists {
-		delete(globalManager.transactions, s.currentKey)
-		delete(globalManager.timeouts, s.currentKey)
-	}
-	globalManager.mu.Unlock()
-
-	if exists && trans != nil {
-		logger.Println("Session ending. Finalizing transaction...")
-		if err := processEmail(trans); err != nil {
-			logger.Printf("[%s] Failed to process email: %v", s.sessionID, err)
-			return err
-		} else {
-			logger.Printf("[%s] Successfully processed transaction: %s", s.sessionID, s.currentKey)
+	// If there's a current transaction with data, add it to pending
+	if s.currentKey != "" {
+		globalManager.mu.Lock()
+		if trans, exists := globalManager.transactions[s.currentKey]; exists && len(trans.dataBuffers) > 0 {
+			s.pendingKeys = append(s.pendingKeys, s.currentKey)
+			logger.Printf("[%s] Added final transaction to pending: %s", s.sessionID, s.currentKey)
 		}
-		return nil
+		globalManager.mu.Unlock()
+	}
+
+	// Process all pending transactions
+	var lastErr error
+	logger.Printf("[%s] Processing %d pending transactions", s.sessionID, len(s.pendingKeys))
+
+	for _, key := range s.pendingKeys {
+		globalManager.mu.Lock()
+		trans, exists := globalManager.transactions[key]
+		if exists {
+			logger.Printf("[%s] Processing transaction: %s", s.sessionID, key)
+			if err := processEmail(trans); err != nil {
+				lastErr = err
+				logger.Printf("[%s] Failed to process email: %v", s.sessionID, err)
+			} else {
+				logger.Printf("[%s] Successfully processed transaction: %s", s.sessionID, key)
+			}
+			delete(globalManager.transactions, key)
+			delete(globalManager.timeouts, key)
+		}
+		globalManager.mu.Unlock()
+	}
+
+	// Clean up the session state
+	s.pendingKeys = nil
+	s.currentKey = ""
+	s.activeEmail = ""
+
+	if lastErr != nil {
+		return lastErr
 	}
 
 	logger.Printf("[%s] Session ended successfully", s.sessionID)
