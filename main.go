@@ -222,21 +222,19 @@ func (s *Session) Mail(from string, _ *smtp.MailOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// First, store the current transaction in pending if it exists
-	// and has been properly processed (has data)
-	if s.currentKey != "" {
-		globalManager.mu.Lock()
-		if trans, exists := globalManager.transactions[s.currentKey]; exists && len(trans.dataBuffers) > 0 {
-			s.pendingKeys = append(s.pendingKeys, s.currentKey)
-			logger.Printf("[%s] Added transaction to pending: %s", s.sessionID, s.currentKey)
-		}
-		globalManager.mu.Unlock()
-	}
-
 	s.activeEmail = from
 	// Include timestamp to make each transaction unique
 	transactionTime := time.Now().UnixNano()
 	s.currentKey = fmt.Sprintf("%s:%s:%d", s.sessionID, from, transactionTime)
+
+	// First, store the current transaction in pending if it exists
+	// and has been properly processed (has data)
+	globalManager.mu.Lock()
+	if trans, exists := globalManager.transactions[s.currentKey]; exists && len(trans.dataBuffers) > 0 {
+		s.pendingKeys = append(s.pendingKeys, s.currentKey)
+		logger.Printf("[%s] Added transaction to pending: %s", s.sessionID, s.currentKey)
+	}
+	globalManager.mu.Unlock()
 
 	globalManager.mu.Lock()
 	trans := &EmailTransaction{from: from}
@@ -319,25 +317,25 @@ func (s *Session) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Only clean up the current transaction if it exists
-	if s.currentKey != "" {
-		globalManager.mu.Lock()
-		// If the current transaction has data, save it to pending
-		if trans, exists := globalManager.transactions[s.currentKey]; exists && len(trans.dataBuffers) > 0 {
-			s.pendingKeys = append(s.pendingKeys, s.currentKey)
-			logger.Printf("[%s] Saved transaction to pending during reset: %s", s.sessionID, s.currentKey)
-		} else {
-			// Only delete the current transaction if it wasn't saved to pending
-			delete(globalManager.transactions, s.currentKey)
-			delete(globalManager.timeouts, s.currentKey)
-			logger.Printf("[%s] Cleaned up incomplete transaction during reset: %s", s.sessionID, s.currentKey)
-		}
-		globalManager.mu.Unlock()
-	}
-
-	// Clear only the current transaction references
-	s.currentKey = ""
-	s.activeEmail = ""
+	//// Only clean up the current transaction if it exists
+	//if s.currentKey != "" {
+	//	globalManager.mu.Lock()
+	//	// If the current transaction has data, save it to pending
+	//	if trans, exists := globalManager.transactions[s.currentKey]; exists && len(trans.dataBuffers) > 0 {
+	//		s.pendingKeys = append(s.pendingKeys, s.currentKey)
+	//		logger.Printf("[%s] Saved transaction to pending during reset: %s", s.sessionID, s.currentKey)
+	//	} else {
+	//		// Only delete the current transaction if it wasn't saved to pending
+	//		delete(globalManager.transactions, s.currentKey)
+	//		delete(globalManager.timeouts, s.currentKey)
+	//		logger.Printf("[%s] Cleaned up incomplete transaction during reset: %s", s.sessionID, s.currentKey)
+	//	}
+	//	globalManager.mu.Unlock()
+	//}
+	//
+	//// Clear only the current transaction references
+	//s.currentKey = ""
+	//s.activeEmail = ""
 
 	debugLog("[%s] RESET command received. Pending transactions: %d", s.sessionID, len(s.pendingKeys))
 
