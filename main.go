@@ -197,6 +197,24 @@ func (s *Session) Mail(from string, _ *smtp.MailOptions) error {
 }
 
 func (s *Session) Rcpt(to string, _ *smtp.RcptOptions) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.currentKey == "" {
+		logger.Printf("Warning: Attempting to add recipient without an active transaction key")
+		return nil
+	}
+
+	globalManager.mu.Lock()
+	trans, exists := globalManager.transactions[s.currentKey]
+	if !exists {
+		trans = &EmailTransaction{}
+		globalManager.transactions[s.currentKey] = trans
+	}
+	trans.addRecipient(to)
+	globalManager.timeouts[s.currentKey] = time.Now()
+	globalManager.mu.Unlock()
+
 	logger.Printf("Recipient added: %s", to)
 	return nil
 }
