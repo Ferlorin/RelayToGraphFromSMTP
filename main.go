@@ -268,7 +268,10 @@ func (s *Session) Data(r io.Reader) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	logger.Printf("[%s] DATA command received", s.sessionID) // Add this line
+
 	if s.currentKey == "" {
+		logger.Printf("[%s] Error: No active transaction for DATA command", s.sessionID) // Add this line
 		return fmt.Errorf("no active transaction")
 	}
 
@@ -288,6 +291,8 @@ func (s *Session) Data(r io.Reader) error {
 	if subject == "" {
 		subject = "No Subject"
 	}
+
+	logger.Printf("[%s] Processing email with subject: %s", s.sessionID, subject) // Add this line
 
 	// Include session ID in the final key
 	finalKey := fmt.Sprintf("%s:%s:%s", s.sessionID, s.activeEmail, subject)
@@ -322,6 +327,36 @@ func (s *Session) Reset() {
 	s.activeEmail = ""
 	s.pendingKeys = nil
 	debugLog("RESET command received")
+}
+
+func (s *Session) Quit() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	logger.Printf("[%s] QUIT command received", s.sessionID) // Add this line
+
+	// Process current transaction if exists
+	if s.currentKey != "" {
+		s.pendingKeys = append(s.pendingKeys, s.currentKey)
+	}
+
+	// Process all pending transactions
+	for _, key := range s.pendingKeys {
+		globalManager.mu.Lock()
+		trans, exists := globalManager.transactions[key]
+		if exists {
+			logger.Printf("[%s] Processing pending transaction from QUIT...", s.sessionID)
+			processEmail(trans)
+			delete(globalManager.transactions, key)
+			delete(globalManager.timeouts, key)
+		}
+		globalManager.mu.Unlock()
+	}
+
+	// Clear all pending transactions
+	s.pendingKeys = nil
+	s.currentKey = ""
+	return nil
 }
 
 func (s *Session) Logout() error {
