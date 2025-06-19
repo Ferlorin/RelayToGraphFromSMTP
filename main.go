@@ -223,8 +223,9 @@ func (s *Session) Mail(from string, _ *smtp.MailOptions) error {
 	defer s.mu.Unlock()
 
 	s.activeEmail = from
-	// Initially use a temporary key until we get the subject
-	s.currentKey = fmt.Sprintf("%s:%s:pending", s.sessionID, from)
+	// Include timestamp to make each transaction unique
+	transactionTime := time.Now().UnixNano()
+	s.currentKey = fmt.Sprintf("%s:%s:%d", s.sessionID, from, transactionTime)
 
 	globalManager.mu.Lock()
 	trans := &EmailTransaction{from: from}
@@ -321,36 +322,6 @@ func (s *Session) Reset() {
 	debugLog("RESET command received")
 }
 
-func (s *Session) Quit() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	logger.Printf("[%s] QUIT command received", s.sessionID) // Add this line
-
-	// Process current transaction if exists
-	if s.currentKey != "" {
-		s.pendingKeys = append(s.pendingKeys, s.currentKey)
-	}
-
-	// Process all pending transactions
-	for _, key := range s.pendingKeys {
-		globalManager.mu.Lock()
-		trans, exists := globalManager.transactions[key]
-		if exists {
-			logger.Printf("[%s] Processing pending transaction from QUIT...", s.sessionID)
-			processEmail(trans)
-			delete(globalManager.transactions, key)
-			delete(globalManager.timeouts, key)
-		}
-		globalManager.mu.Unlock()
-	}
-
-	// Clear all pending transactions
-	s.pendingKeys = nil
-	s.currentKey = ""
-	return nil
-}
-
 func (s *Session) Logout() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -362,14 +333,18 @@ func (s *Session) Logout() error {
 	globalManager.mu.Lock()
 	trans, exists := globalManager.transactions[s.currentKey]
 	if exists {
-		logger.Println("Session ending. Finalizing transaction...")
-		processEmail(trans)
+		// Process the email before cleaning up
+		if err := processEmail(trans); err != nil {
+			globalManager.mu.Unlock()
+			logger.Printf("[%s] Failed to process email: %v", s.sessionID, err)
+			return err
+		}
 		delete(globalManager.transactions, s.currentKey)
 		delete(globalManager.timeouts, s.currentKey)
 	}
 	globalManager.mu.Unlock()
 
-	s.currentKey = ""
+	logger.Printf("[%s] Session ended successfully", s.sessionID)
 	return nil
 }
 
@@ -391,10 +366,10 @@ func processEmailContent(msg *message.Entity, data []byte, trans *EmailTransacti
 }
 
 // --- Email Processing ---
-func processEmail(trans *EmailTransaction) {
+func processEmail(trans *EmailTransaction) error {
 	if trans.from == "" || len(trans.to) == 0 || len(trans.dataBuffers) == 0 {
 		logger.Println("Empty transaction. Skipping email processing.")
-		return
+		return fmt.Errorf("invalid email transaction: missing required fields")
 	}
 
 	// Concatenate all buffers into the email content
@@ -412,7 +387,7 @@ func processEmail(trans *EmailTransaction) {
 	msg, err := mail.CreateReader(r)
 	if err != nil {
 		logger.Printf("Failed to parse email: %v", err)
-		return
+		return fmt.Errorf("failed to parse email: %v", err)
 	}
 
 	// Extract Subject
@@ -462,7 +437,7 @@ func processEmail(trans *EmailTransaction) {
 		}
 		if err != nil {
 			logger.Printf("Failed to read MIME part: %v", err)
-			return
+			return fmt.Errorf("failed to read MIME part: %v", err)
 		}
 
 		// Handle Inline Headers for email content
@@ -523,10 +498,13 @@ func processEmail(trans *EmailTransaction) {
 		messageBody = htmlBody
 		bodyContentType = "HTML"
 	}
-
 	// Debug recipients and attachments
 	logger.Printf("Final Recipients: To: %v, Cc: %v, Bcc: %v", toList, ccList, bccList)
 	debugLog("Attachments field (array): %v", attachments)
+
+	if messageBody == "" {
+		return fmt.Errorf("email has no body content")
+	}
 
 	// Ensure attachments is **always** an array (important fix)
 	if attachments == nil {
@@ -535,15 +513,13 @@ func processEmail(trans *EmailTransaction) {
 
 	// Build the email payload
 	graphMessage := buildGraphMessage(subject, bodyContentType, messageBody, toList, ccList, bccList, attachments)
-
-	// Send the email
-	err = sendMail(trans.from, graphMessage)
-	if err != nil {
+	if err := sendMail(trans.from, graphMessage); err != nil {
 		logger.Printf("Failed to send email: %v", err)
-		return
+		return fmt.Errorf("failed to send email: %v", err)
 	}
 
-	logger.Println("Email processed and sent successfully.")
+	logger.Println("Email processed and sent successfully")
+	return nil
 }
 
 func buildGraphMessage(subject string, bodyContentType string, messageBody string, toList []string, ccList []string, bccList []string, attachments []map[string]interface{}) map[string]interface{} {
