@@ -215,11 +215,17 @@ type Session struct {
 	sessionID   string
 	currentKey  string
 	activeEmail string
+	pendingKeys []string // Add this to track all transactions in the session
 }
 
 func (s *Session) Mail(from string, _ *smtp.MailOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// If there's a current transaction, add it to pending
+	if s.currentKey != "" {
+		s.pendingKeys = append(s.pendingKeys, s.currentKey)
+	}
 
 	s.activeEmail = from
 	s.currentKey = fmt.Sprintf("%s:%s:%d", s.sessionID, from, time.Now().UnixNano())
@@ -303,6 +309,18 @@ func (s *Session) Data(r io.Reader) error {
 func (s *Session) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Clean up current transaction if any
+	if s.currentKey != "" {
+		globalManager.mu.Lock()
+		delete(globalManager.transactions, s.currentKey)
+		delete(globalManager.timeouts, s.currentKey)
+		globalManager.mu.Unlock()
+	}
+
+	s.currentKey = ""
+	s.activeEmail = ""
+	s.pendingKeys = nil
 	debugLog("RESET command received")
 }
 
@@ -310,25 +328,27 @@ func (s *Session) Logout() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.currentKey == "" {
-		return nil
+	// Process current transaction if exists
+	if s.currentKey != "" {
+		s.pendingKeys = append(s.pendingKeys, s.currentKey)
 	}
 
-	globalManager.mu.Lock()
-	trans, exists := globalManager.transactions[s.currentKey]
-	if exists {
-		delete(globalManager.transactions, s.currentKey)
-		delete(globalManager.timeouts, s.currentKey)
+	// Process all pending transactions
+	for _, key := range s.pendingKeys {
+		globalManager.mu.Lock()
+		trans, exists := globalManager.transactions[key]
+		if exists {
+			logger.Println("Processing pending transaction...")
+			processEmail(trans)
+			delete(globalManager.transactions, key)
+			delete(globalManager.timeouts, key)
+		}
+		globalManager.mu.Unlock()
 	}
-	globalManager.mu.Unlock()
 
-	if exists && trans != nil {
-		logger.Println("Session ending. Finalizing transaction...")
-		processEmail(trans)
-		return nil
-	}
-
-	logger.Println("Transaction reset. Session successfully ended.")
+	// Clear all pending transactions
+	s.pendingKeys = nil
+	s.currentKey = ""
 	return nil
 }
 
