@@ -528,9 +528,9 @@ func processEmail(trans *EmailTransaction) error {
 	logger.Printf("Final Recipients: To: %v, Cc: %v, Bcc: %v", toList, ccList, bccList)
 	debugLog("Attachments field (array): %v", attachments)
 
-	if messageBody == "" {
-		return fmt.Errorf("email has no body content")
-	}
+	//if messageBody == "" {
+	//	return fmt.Errorf("email has no body content")
+	//}
 
 	// Ensure attachments is **always** an array (important fix)
 	if attachments == nil {
